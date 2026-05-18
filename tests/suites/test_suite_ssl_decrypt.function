@@ -14,6 +14,7 @@
  */
 
 /* BEGIN_CASE depends_on:MBEDTLS_SSL_PROTO_TLS1_2:MBEDTLS_SSL_NULL_CIPHERSUITES */
+
 void ssl_decrypt_null(int hash_id)
 {
     mbedtls_ssl_transform transform_in, transform_out;
@@ -309,5 +310,167 @@ exit:
     mbedtls_free(buf);
     mbedtls_free(buf_save);
     MD_OR_USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+/* BEGIN_DEPENDENCIES
+ * depends_on:MBEDTLS_ENTROPY_C:MBEDTLS_FS_IO
+ * END_DEPENDENCIES
+ */
+void test_entropy_write_seed_file(char *path)
+{
+    printf("[DEBUG] Entering test_entropy_write_seed_file with path: %s\n", path);
+    
+    mbedtls_entropy_context ctx;
+    unsigned char buf[MBEDTLS_ENTROPY_MAX_SEED_SIZE];
+    size_t n = 32;
+    int ret = 0;
+    struct stat st;
+    FILE *f = NULL;
+    unsigned char read_buf[MBEDTLS_ENTROPY_MAX_SEED_SIZE];
+    size_t bytes_read = 0;
+    int all_zeros = 1;
+    size_t i;
+
+    printf("[DEBUG] Initializing buffers with memset\n");
+    memset(buf, 0, sizeof(buf));
+    memset(read_buf, 0, sizeof(read_buf));
+    printf("[DEBUG] Buffers initialized (size: %zu bytes)\n", sizeof(buf));
+
+    /* Clean up any existing file */
+    printf("[DEBUG] Attempting to unlink existing file at path: %s\n", path);
+    unlink(path);
+    printf("[DEBUG] Unlink completed (file may or may not have existed)\n");
+
+    /* Initialize entropy context */
+    printf("[DEBUG] Calling mbedtls_entropy_init\n");
+    mbedtls_entropy_init(&ctx);
+    printf("[DEBUG] mbedtls_entropy_init completed successfully\n");
+
+    /* Fill buffer with some test data */
+    printf("[DEBUG] Filling buffer with test data (0xAA pattern, %zu bytes)\n", n);
+    memset(buf, 0xAA, n);
+    printf("[DEBUG] Buffer filled with test data\n");
+
+    /* Step 1: Update entropy manually */
+    printf("[DEBUG] Step 1: Calling mbedtls_entropy_update_manual with %zu bytes\n", n);
+    ret = mbedtls_entropy_update_manual(&ctx, buf, n);
+    printf("[DEBUG] mbedtls_entropy_update_manual returned: %d\n", ret);
+    if (ret == 0) {
+        printf("[DEBUG] mbedtls_entropy_update_manual succeeded\n");
+    } else {
+        printf("[DEBUG] ERROR: mbedtls_entropy_update_manual failed with code: %d\n", ret);
+    }
+    TEST_EQUAL(ret, 0);
+    printf("[DEBUG] Assertion passed: ret == 0\n");
+
+    /* Step 2: Zeroize the buffer */
+    printf("[DEBUG] Step 2: Calling mbedtls_platform_zeroize on buffer (%zu bytes)\n", sizeof(buf));
+    mbedtls_platform_zeroize(buf, sizeof(buf));
+    printf("[DEBUG] mbedtls_platform_zeroize completed\n");
+
+    /* Step 3: Write seed file */
+    printf("[DEBUG] Step 3: Calling mbedtls_entropy_write_seed_file to path: %s\n", path);
+    ret = mbedtls_entropy_write_seed_file(&ctx, path);
+    printf("[DEBUG] mbedtls_entropy_write_seed_file returned: %d\n", ret);
+    if (ret == 0) {
+        printf("[DEBUG] mbedtls_entropy_write_seed_file succeeded\n");
+    } else {
+        printf("[DEBUG] ERROR: mbedtls_entropy_write_seed_file failed with code: %d\n", ret);
+    }
+    TEST_EQUAL(ret, 0);
+    printf("[DEBUG] Assertion passed: ret == 0\n");
+
+    /* Validate that the file was created */
+    printf("[DEBUG] Validating file creation with stat()\n");
+    ret = stat(path, &st);
+    printf("[DEBUG] stat() returned: %d\n", ret);
+    if (ret == 0) {
+        printf("[DEBUG] File exists at path: %s\n", path);
+    } else {
+        printf("[DEBUG] ERROR: File does not exist or stat() failed\n");
+    }
+    TEST_EQUAL(stat(path, &st), 0);
+    printf("[DEBUG] Assertion passed: file exists\n");
+
+    /* Validate that the file has the expected size (MBEDTLS_ENTROPY_BLOCK_SIZE) */
+    printf("[DEBUG] Validating file size. Expected: %d, Actual: %lld\n", 
+           MBEDTLS_ENTROPY_BLOCK_SIZE, (long long)st.st_size);
+    if (st.st_size == MBEDTLS_ENTROPY_BLOCK_SIZE) {
+        printf("[DEBUG] File size matches expected size\n");
+    } else {
+        printf("[DEBUG] ERROR: File size mismatch! Expected: %d, Got: %lld\n",
+               MBEDTLS_ENTROPY_BLOCK_SIZE, (long long)st.st_size);
+    }
+    TEST_EQUAL(st.st_size, MBEDTLS_ENTROPY_BLOCK_SIZE);
+    printf("[DEBUG] Assertion passed: file size is correct\n");
+
+    /* Validate that the file contains data (not all zeros) */
+    printf("[DEBUG] Opening file for reading: %s\n", path);
+    f = fopen(path, "rb");
+    printf("[DEBUG] fopen returned: %p\n", (void*)f);
+    if (f != NULL) {
+        printf("[DEBUG] File opened successfully\n");
+    } else {
+        printf("[DEBUG] ERROR: Failed to open file\n");
+    }
+    TEST_ASSERT(f != NULL);
+    printf("[DEBUG] Assertion passed: file opened\n");
+
+    printf("[DEBUG] Reading %d bytes from file\n", MBEDTLS_ENTROPY_BLOCK_SIZE);
+    bytes_read = fread(read_buf, 1, MBEDTLS_ENTROPY_BLOCK_SIZE, f);
+    printf("[DEBUG] fread returned bytes_read: %zu\n", bytes_read);
+    
+    printf("[DEBUG] Closing file\n");
+    fclose(f);
+    printf("[DEBUG] File closed\n");
+
+    if (bytes_read == MBEDTLS_ENTROPY_BLOCK_SIZE) {
+        printf("[DEBUG] Read expected number of bytes\n");
+    } else {
+        printf("[DEBUG] ERROR: Bytes read mismatch! Expected: %d, Got: %zu\n",
+               MBEDTLS_ENTROPY_BLOCK_SIZE, bytes_read);
+    }
+    TEST_EQUAL(bytes_read, MBEDTLS_ENTROPY_BLOCK_SIZE);
+    printf("[DEBUG] Assertion passed: bytes_read matches expected\n");
+
+    printf("[DEBUG] Checking if file content is all zeros\n");
+    all_zeros = 1;
+    for (i = 0; i < MBEDTLS_ENTROPY_BLOCK_SIZE; i++) {
+        if (read_buf[i] != 0) {
+            all_zeros = 0;
+            printf("[DEBUG] Non-zero byte found at index %zu: 0x%02X\n", i, read_buf[i]);
+            break;
+        }
+    }
+    
+    if (all_zeros == 1) {
+        printf("[DEBUG] WARNING: All bytes in file are zero!\n");
+    } else {
+        printf("[DEBUG] File contains non-zero data (good)\n");
+    }
+
+    if (all_zeros == 0) {
+        printf("[DEBUG] File content validation: PASS (not all zeros)\n");
+    } else {
+        printf("[DEBUG] ERROR: File content validation: FAIL (all zeros)\n");
+    }
+    TEST_EQUAL(all_zeros, 0);
+    printf("[DEBUG] Assertion passed: file contains non-zero data\n");
+
+    /* Cleanup */
+    printf("[DEBUG] Cleanup: Calling mbedtls_entropy_free\n");
+    mbedtls_entropy_free(&ctx);
+    printf("[DEBUG] mbedtls_entropy_free completed\n");
+    
+    printf("[DEBUG] Cleanup: Unlinking file: %s\n", path);
+    unlink(path);
+    printf("[DEBUG] File unlinked\n");
+    
+    printf("[DEBUG] Exiting test_entropy_write_seed_file successfully\n");
+
+exit:
+    ;
 }
 /* END_CASE */
